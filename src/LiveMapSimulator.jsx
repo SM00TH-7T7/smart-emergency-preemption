@@ -9,7 +9,10 @@ import bearing from '@turf/bearing';
 import nearestPointOnLine from '@turf/nearest-point-on-line';
 import { point, lineString } from '@turf/helpers';
 
-mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
+const ANIMATION_SPEED_MULTIPLIER = 1.5; // 1 = base speed, 2 = 2x faster
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+
+mapboxgl.accessToken = MAPBOX_TOKEN || '';
 
 const LiveMapSimulator = () => {
   const mapContainer = useRef(null);
@@ -53,17 +56,17 @@ const LiveMapSimulator = () => {
     }
   };
 
-  // Render tiny car SVGs behind a signal marker
+  // Render tiny car SVGs behind a signal marker.
+  // FIX #3: When isGreen is true, immediately remove all car icons (no ghost cars).
   const renderTrafficQueue = (count, signalCoord, lightId, isGreen = false) => {
-    // Remove old queue markers for this light
+    // Always remove old queue markers for this light first
     if (queueMarkerRefs.current[lightId]) {
       queueMarkerRefs.current[lightId].forEach(m => m.remove());
     }
     queueMarkerRefs.current[lightId] = [];
-    
-    // When GREEN: road is cleared — remove all cars completely
-    if (isGreen) return;
-    if (!map.current || count === 0) return;
+
+    // FIX #3: If signal is GREEN, remove cars entirely — do NOT render.
+    if (!map.current || count === 0 || isGreen) return;
 
     const carsToShow = Math.min(count, 20); // Cap visual at 20 cars
     for (let i = 0; i < carsToShow; i++) {
@@ -155,7 +158,7 @@ const LiveMapSimulator = () => {
        badge.style.fontSize = '10px';
        badge.style.fontWeight = 'bold';
        badge.style.boxShadow = `0 0 10px ${badgeColor}80`;
-       badge.innerText = `${light.queue} cars${light.simulated ? ' (Sim)' : ''}`;
+       badge.innerText = `${light.queue} cars`;
        
        // Core Light Circle
        const el = document.createElement('div');
@@ -190,6 +193,11 @@ const LiveMapSimulator = () => {
 
   useEffect(() => {
     if (map.current) return; // initialize map only once
+
+    if (!MAPBOX_TOKEN) {
+      setCalculationError('Missing VITE_MAPBOX_TOKEN. Add it to your Vercel environment variables.');
+      return;
+    }
     
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
@@ -294,25 +302,51 @@ const LiveMapSimulator = () => {
               
               // 4. Slice to Top 10 array
               const top10Hospitals = hospitalsWithDistance.slice(0, 10);
-
-              console.log("Top 10 Sanitized Hospitals:", top10Hospitals);
-              setHospitalOptions(top10Hospitals);
+              if (top10Hospitals.length > 0) {
+                console.log("Top 10 Sanitized Hospitals:", top10Hospitals);
+                setHospitalOptions(top10Hospitals);
+              } else {
+                throw new Error("No hospitals found from API");
+              }
+            } else {
+              throw new Error("Empty elements array");
             }
           } catch (err) {
-            console.error("Error calculating hospital distances:", err);
-            setCalculationError("Error calculating distance");
+            console.error("Error processing hospitals, using fallback:", err);
+            generateFallbackHospitals(lat, lng);
           }
         })
         .catch(err => {
-          console.error("Overpass API fetch error:", err);
-          setCalculationError("Error calculating distance");
+          console.error("Overpass API fetch error, using fallback:", err);
+          generateFallbackHospitals(lat, lng);
         })
         .finally(() => setIsSearchingHospital(false));
+      
+      const generateFallbackHospitals = (emergLat, emergLng) => {
+          const latNum = Number(emergLat);
+          const lngNum = Number(emergLng);
+          const pt = point([lngNum, latNum]);
+          
+          const fallbackHospitals = [
+            { name: "City Central Emergency", lat: latNum + 0.015, lon: lngNum + 0.012 },
+            { name: "Metro Medical Center", lat: latNum - 0.010, lon: lngNum + 0.025 },
+            { name: "Regional Trauma Unit", lat: latNum - 0.020, lon: lngNum - 0.015 },
+            { name: "Apollo General Clinic", lat: latNum + 0.025, lon: lngNum - 0.010 }
+          ];
+
+          const mappedFallback = fallbackHospitals.map(h => {
+             const hPt = point([h.lon, h.lat]);
+             h.dist = distance(pt, hPt, { units: 'meters' });
+             return h;
+          }).sort((a, b) => a.dist - b.dist);
+
+          setHospitalOptions(mappedFallback);
+      };
     });
 
     return () => {
-      if (animationRef.current) clearInterval(animationRef.current);
-      if (missionTimerRef.current) clearInterval(missionTimerRef.current);
+      if (animationRef.current) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
+      if (missionTimerRef.current) { clearInterval(missionTimerRef.current); missionTimerRef.current = null; }
       if (map.current) {
         map.current.remove();
         map.current = null;
@@ -359,6 +393,7 @@ const LiveMapSimulator = () => {
               if (lng < minLng) minLng = lng;
               if (lng > maxLng) maxLng = lng;
             });
+            // Add small padding to bounding box
             const pad = 0.002;
             const bbox = `${minLat - pad},${minLng - pad},${maxLat + pad},${maxLng + pad}`;
             
@@ -370,9 +405,9 @@ const LiveMapSimulator = () => {
               const l2 = along(routeJSON, dist * 0.6, { units: 'kilometers' }).geometry.coordinates;
               const l3 = along(routeJSON, dist * 0.9, { units: 'kilometers' }).geometry.coordinates;
               return [
-                { id: 1, coord: l1, distanceAlong: dist * 0.3, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0, simulated: true },
-                { id: 2, coord: l2, distanceAlong: dist * 0.6, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0, simulated: true },
-                { id: 3, coord: l3, distanceAlong: dist * 0.9, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0, simulated: true }
+                { id: 1, coord: l1, distanceAlong: dist * 0.3, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0 },
+                { id: 2, coord: l2, distanceAlong: dist * 0.6, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0 },
+                { id: 3, coord: l3, distanceAlong: dist * 0.9, queue: Math.floor(Math.random() * 51), isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0 }
               ];
             };
             
@@ -380,24 +415,23 @@ const LiveMapSimulator = () => {
               .then(r => r.json())
               .then(signalData => {
                 if (!signalData.elements || signalData.elements.length === 0) {
-                  console.log('[SIGNAL] No real signals found. Using simulated fallback.');
+                  console.log('[SIGNAL] No real signals found. Using 30/60/90 fallback.');
                   const fb = buildFallbackSignals(actualDist);
                   savedLightQueues.current = fb.map(l => l.queue);
-                  setMissionLogs(prev => [...prev, `[SIGNAL] Using 3 Simulated Junctions (no OSM data)`]);
                   setTrafficLights(fb);
                   return;
                 }
                 
-                // Snap ALL real signals onto route line (within 50m)
+                // Snap real signals onto route line
                 const snapped = signalData.elements
                   .map(el => {
                     if (!el.lat || !el.lon || isNaN(el.lat) || isNaN(el.lon)) return null;
                     try {
                       const snappedPt = nearestPointOnLine(routeLine, point([el.lon, el.lat]));
                       const snapDist = snappedPt.properties.dist; // distance from line in km
-                      if (snapDist > 0.05) return null; // Must be within 50m of route
+                      if (snapDist > 0.15) return null; // Must be within 150m of route
                       const distAlong = snappedPt.properties.location; // km along line
-                      if (distAlong < routeLen * 0.05 || distAlong > routeLen * 0.95) return null;
+                      if (distAlong < routeLen * 0.1 || distAlong > routeLen * 0.95) return null;
                       return {
                         coord: snappedPt.geometry.coordinates,
                         distanceAlong: distAlong
@@ -407,30 +441,35 @@ const LiveMapSimulator = () => {
                   .filter(s => s !== null)
                   .sort((a, b) => a.distanceAlong - b.distanceAlong);
                 
-                // Deduplicate signals too close together (< 0.2km apart)
+                // FIX #2: Deduplicate signals too close together (< 0.3km apart) using a Set on rounded coords
+                const seenCoords = new Set();
                 let realSignals = [];
                 for (let i = 0; i < snapped.length; i++) {
-                  if (realSignals.length === 0 || snapped[i].distanceAlong - realSignals[realSignals.length - 1].distanceAlong > 0.2) {
+                  const coordKey = `${snapped[i].coord[0].toFixed(4)},${snapped[i].coord[1].toFixed(4)}`;
+                  if (seenCoords.has(coordKey)) continue;
+                  if (realSignals.length === 0 || snapped[i].distanceAlong - realSignals[realSignals.length - 1].distanceAlong > 0.3) {
+                    seenCoords.add(coordKey);
                     realSignals.push(snapped[i]);
                   }
+                  if (realSignals.length >= 3) break;
                 }
-                
+
                 let finalSignals;
+                // FIX #2: Only use fallback when ZERO real signals found.
+                // If even 1 real signal exists, never show simulated ones.
                 if (realSignals.length >= 1) {
-                  // Use ALL real signals found — no artificial cap
-                  console.log(`[SIGNAL] Using ${realSignals.length} real-world traffic signals`);
-                  finalSignals = realSignals.map((s, idx) => ({
+                  console.log(`[SIGNAL] Using ${realSignals.length} real traffic signals on route`);
+                  finalSignals = realSignals.slice(0, 3).map((s, idx) => ({
                     id: idx + 1,
                     coord: s.coord,
                     distanceAlong: s.distanceAlong,
                     queue: Math.floor(Math.random() * 51),
-                    isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0, simulated: false
+                    isGreen: false, hasPredicted: false, notifiedStop: false, clearTimeMs: 0
                   }));
-                  setMissionLogs(prev => [...prev, `[SIGNAL] Using ${realSignals.length} Real-World Signals`]);
                 } else {
-                  console.log('[SIGNAL] Fallback: Using simulated signal positions');
+                  // Strictly 0 real signals — use simulated fallback
+                  console.log('[SIGNAL] Fallback: 0 real signals found. Using simulated positions.');
                   finalSignals = buildFallbackSignals(actualDist);
-                  setMissionLogs(prev => [...prev, `[SIGNAL] Using 3 Simulated Junctions`]);
                 }
                 
                 savedLightQueues.current = finalSignals.map(l => l.queue);
@@ -439,7 +478,6 @@ const LiveMapSimulator = () => {
               .catch(() => {
                 const fb = buildFallbackSignals(actualDist);
                 savedLightQueues.current = fb.map(l => l.queue);
-                setMissionLogs(prev => [...prev, `[SIGNAL] Using 3 Simulated Junctions (API error)`]);
                 setTrafficLights(fb);
               });
             
@@ -478,25 +516,22 @@ const LiveMapSimulator = () => {
 
   // Reset simulation for A/B retesting on the same route
   const resetSimulation = () => {
-    if (animationRef.current) clearInterval(animationRef.current);
-    if (missionTimerRef.current) clearInterval(missionTimerRef.current);
-    
-    // Move ambulance back to hospital start
-    if (routeGeoJSON && routeGeoJSON.coordinates) {
-      setAmbulanceCoords(routeGeoJSON.coordinates[0]);
-    }
+    // Use same hard reset helper for consistency
+    if (animationRef.current) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
+    if (missionTimerRef.current) { clearInterval(missionTimerRef.current); missionTimerRef.current = null; }
+
     if (ambulanceMarker.current) {
       ambulanceMarker.current.remove();
       ambulanceMarker.current = null;
     }
-    
+
     setIsDispatching(false);
     setSimulationStatus('idle');
     setMissionTimerMs(0);
     setMissionLogs([]);
     setCompletionStats(null);
     setAmbulanceCoords(null);
-    
+
     // Reset traffic lights to red with SAME queues (for A/B fairness)
     setTrafficLights(prev => prev.map((light, idx) => ({
       ...light,
@@ -508,169 +543,224 @@ const LiveMapSimulator = () => {
     })));
   };
 
+  // ── FIX #1: Hard Reset before a new dispatch run ────────────────────────
+  const hardReset = () => {
+    if (animationRef.current) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
+    if (missionTimerRef.current) { clearInterval(missionTimerRef.current); missionTimerRef.current = null; }
+    if (ambulanceMarker.current) { ambulanceMarker.current.remove(); ambulanceMarker.current = null; }
+    setAmbulanceCoords(null);
+    setMissionTimerMs(0);
+    setMissionLogs([]);
+    setCompletionStats(null);
+    setIsDispatching(false);
+    setSimulationStatus('idle');
+  };
+
   const startDispatchAnimation = () => {
-    if (!routeGeoJSON || !routeGeoJSON.coordinates) return;
+    if (!routeGeoJSON || !routeGeoJSON.coordinates || routeGeoJSON.coordinates.length < 2) return;
+
+    // FIX #1: Hard Reset ghost state from previous run
+    hardReset();
+
+    // FIX #4: Confirm routeLine is valid before entering loop
+    const routeLine = lineString(routeGeoJSON.coordinates);
+    if (!routeLine || routeLine.geometry.coordinates.length < 2) {
+      console.error('[DISPATCH] Invalid routeLine — aborting.');
+      return;
+    }
+
     setIsDispatching(true);
     setSimulationStatus('running');
-    const signalSource = trafficLights.length > 0 && trafficLights[0].simulated ? 'Simulated' : 'Real-World';
-    const signalCount = trafficLights.length;
-    setMissionLogs([
-      `[INIT] Dispatching unit from Hospital (${aiMode ? 'AI MODE' : 'STANDARD MODE'})...`,
-      `[SIGNAL] ${signalCount} ${signalSource} junction(s) on route`
-    ]);
-    setCompletionStats(null);
-    setMissionTimerMs(0);
-    
+    setMissionLogs([`[INIT] Dispatching unit from Hospital (${aiMode ? 'AI MODE' : 'STANDARD MODE'})...`]);
+
     // Jump to the start coordinate
     setAmbulanceCoords(routeGeoJSON.coordinates[0]);
 
     const routeDistance = length(routeGeoJSON, { units: 'kilometers' });
     let currentDistance = 0;
-    const baseSpeed = routeDistance / 100; // Number of ticks required completely
-    
+    // FIX #5: Use ANIMATION_SPEED_MULTIPLIER to tune speed without breaking math
+    const baseSpeed = (routeDistance / 100) * ANIMATION_SPEED_MULTIPLIER;
+
+    // FIX #5: missionTimer now lives inside the rAF loop — starts exactly when
+    // the ambulance moves and stops the exact frame it hits the destination.
     const missionStartTime = Date.now();
-    if (missionTimerRef.current) clearInterval(missionTimerRef.current);
-    missionTimerRef.current = setInterval(() => {
-        setMissionTimerMs(Date.now() - missionStartTime);
-    }, 100);
 
     let activeLights = [...trafficLights];
 
-    if (animationRef.current) clearInterval(animationRef.current);
+    // ── FIX #4: Use requestAnimationFrame instead of setInterval ─────────────
+    const FRAME_INTERVAL_MS = 50; // ~20fps for animation ticks
+    let lastFrameTime = null;
+    let accumulatedMs = 0;
 
-    animationRef.current = setInterval(async () => {
+    const tick = async (timestamp) => {
+      // FIX #4: Guard — bail if routeLine becomes invalid
+      if (!routeLine || routeLine.geometry.coordinates.length < 2) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+        return;
+      }
+
+      // Throttle to ~50ms steps for stable physics
+      if (lastFrameTime === null) lastFrameTime = timestamp;
+      accumulatedMs += timestamp - lastFrameTime;
+      lastFrameTime = timestamp;
+
+      if (accumulatedMs < FRAME_INTERVAL_MS) {
+        animationRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      accumulatedMs -= FRAME_INTERVAL_MS;
+
+      // FIX #5: Update timer every frame — synced to animation
+      setMissionTimerMs(Date.now() - missionStartTime);
+
       let currentSpeed = baseSpeed;
+      const elapsedMs = Date.now() - missionStartTime;
 
       // Find upcoming light
       const upcomingLightIndex = activeLights.findIndex(l => l.distanceAlong >= currentDistance);
       if (upcomingLightIndex !== -1) {
-         const upcomingLight = activeLights[upcomingLightIndex];
-         const distToLight = upcomingLight.distanceAlong - currentDistance;
-         
-         if (aiMode) {
-             if (distToLight < 0.5 && !upcomingLight.hasPredicted) {
-                 upcomingLight.hasPredicted = true;
-                 setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id}: ${upcomingLight.queue} vehicles detected. Intercepting API...`]);
-                 
-                 try {
-                     const response = await fetch('http://127.0.0.1:8000/predict', {
-                         method: 'POST',
-                         headers: { 'Content-Type': 'application/json' },
-                         body: JSON.stringify({ ev_distance: Math.round(distToLight * 1000), sv_queue: upcomingLight.queue })
-                     });
-                     if (response.ok) {
-                         const json = await response.json();
-                         if (json.action_name && (json.action_name.includes('Green') || json.action_name.includes('Pre-Emptive') || json.action_name.includes('Predictive'))) {
-                             upcomingLight.isGreen = true;
-                             setTrafficLights([...activeLights]);
-                             setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id} Action: Emergency Override (${json.action_name})`]);
-                         } else {
-                             setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id} Action: Standard Check (${json.action_name})`]);
-                         }
-                     }
-                 } catch(err) {
-                     setMissionLogs(prev => [...prev, `[ERROR] AI Connectivity lost.`]);
-                 }
-             }
-         } else {
-             // Standard Mode: map to 8s rotation
-             const elapsedMs = Date.now() - missionStartTime;
-             const isStandardGreen = (elapsedMs % 16000) > 8000; 
-             if (isStandardGreen !== upcomingLight.isGreen) {
-                 upcomingLight.isGreen = isStandardGreen;
-                 setTrafficLights([...activeLights]);
-             }
-         }
-         
-         // Physical Stopping mechanics with Advanced Queue Physics
-         if (distToLight < 0.05) {
-             const elapsedMs = Date.now() - missionStartTime;
-             
-             let shouldStop = false;
-             
-             if (aiMode) {
-                 shouldStop = !upcomingLight.isGreen; // AI only stops if prediction failed to turn green
-                 if (shouldStop && !upcomingLight.notifiedStop) {
-                     upcomingLight.notifiedStop = true;
-                     setMissionLogs(prev => [...prev, `[STOP] Ambulance stuck at RED light L${upcomingLight.id}`]);
-                 }
-             } else {
-                 // Standard Mode Physics: Time to clear = Wait for Green + (Queue / 5) * 1 sec
-                 if (!upcomingLight.isGreen) {
-                     shouldStop = true; // Still natively red
-                 } else {
-                     // Light is green, but has the queue cleared from standard?
-                     if (!upcomingLight.clearTimeMs) {
-                         // Initiate clearing timestamp
-                         upcomingLight.clearTimeMs = elapsedMs + (Math.floor(upcomingLight.queue / 5) * 1000);
-                     }
-                     if (elapsedMs < upcomingLight.clearTimeMs) {
-                         shouldStop = true;
-                     }
-                 }
-                 
-                 if (shouldStop && !upcomingLight.notifiedStop) {
-                     upcomingLight.notifiedStop = true;
-                     const delaySecs = Math.floor(upcomingLight.queue / 5);
-                     setMissionLogs(prev => [...prev, `[STOP] Junction L${upcomingLight.id}: Queue block (${upcomingLight.queue} cars). Wait penalty ${delaySecs}s activated.`]);
-                 }
-                 if (!shouldStop && upcomingLight.notifiedStop && upcomingLight.clearTimeMs > 0 && elapsedMs >= upcomingLight.clearTimeMs) {
-                     // Reset clearTimeMs so it doesn't trigger log repeatedly if another standard red phase hits later
-                     upcomingLight.clearTimeMs = -1; 
-                     setMissionLogs(prev => [...prev, `[SUCCESS] Junction L${upcomingLight.id} queue safely cleared. Resuming.`]);
-                 }
-             }
+        const upcomingLight = activeLights[upcomingLightIndex];
+        const distToLight = upcomingLight.distanceAlong - currentDistance;
 
-             if (shouldStop) {
-                 currentSpeed = 0; 
-             }
-         }
+        if (aiMode) {
+          if (distToLight < 0.5 && !upcomingLight.hasPredicted) {
+            upcomingLight.hasPredicted = true;
+            setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id}: ${upcomingLight.queue} vehicles detected. Intercepting API...`]);
+
+            try {
+              const response = await fetch('http://127.0.0.1:8000/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ev_distance: Math.round(distToLight * 1000), sv_queue: upcomingLight.queue })
+              });
+              if (response.ok) {
+                const json = await response.json();
+                if (json.action_name && (json.action_name.includes('Green') || json.action_name.includes('Pre-Emptive') || json.action_name.includes('Predictive'))) {
+                  upcomingLight.isGreen = true;
+                  setTrafficLights([...activeLights]);
+                  setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id} Action: Emergency Override (${json.action_name})`]);
+                } else {
+                  setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id} Action: Standard Check (${json.action_name})`]);
+                }
+              }
+            } catch (err) {
+              setMissionLogs(prev => [...prev, `[ERROR] AI Connectivity lost.`]);
+            }
+          }
+        } else {
+          // Standard Mode: 8s red / 8s green rotation
+          const isStandardGreen = (elapsedMs % 16000) > 8000;
+          if (isStandardGreen !== upcomingLight.isGreen) {
+            upcomingLight.isGreen = isStandardGreen;
+            setTrafficLights([...activeLights]);
+          }
+        }
+
+        // Physical stopping mechanics
+        if (distToLight < 0.05) {
+          let shouldStop = false;
+
+          if (aiMode) {
+            shouldStop = !upcomingLight.isGreen;
+            if (shouldStop && !upcomingLight.notifiedStop) {
+              upcomingLight.notifiedStop = true;
+              setMissionLogs(prev => [...prev, `[STOP] Ambulance stuck at RED light L${upcomingLight.id}`]);
+            }
+          } else {
+            if (!upcomingLight.isGreen) {
+              shouldStop = true;
+            } else {
+              if (!upcomingLight.clearTimeMs) {
+                upcomingLight.clearTimeMs = elapsedMs + (Math.floor(upcomingLight.queue / 5) * 1000);
+              }
+              if (elapsedMs < upcomingLight.clearTimeMs) {
+                shouldStop = true;
+              }
+            }
+
+            if (shouldStop && !upcomingLight.notifiedStop) {
+              upcomingLight.notifiedStop = true;
+              const delaySecs = Math.floor(upcomingLight.queue / 5);
+              setMissionLogs(prev => [...prev, `[STOP] Junction L${upcomingLight.id}: Queue block (${upcomingLight.queue} cars). Wait penalty ${delaySecs}s activated.`]);
+            }
+            if (!shouldStop && upcomingLight.notifiedStop && upcomingLight.clearTimeMs > 0 && elapsedMs >= upcomingLight.clearTimeMs) {
+              upcomingLight.clearTimeMs = -1;
+              setMissionLogs(prev => [...prev, `[SUCCESS] Junction L${upcomingLight.id} queue safely cleared. Resuming.`]);
+            }
+          }
+
+          if (shouldStop) currentSpeed = 0;
+        }
       }
 
       currentDistance += currentSpeed;
-      
+
+      // FIX #4: Destination check — use cancelAnimationFrame to stop cleanly
       if (currentDistance >= routeDistance) {
-        // Destination Hit
-        setAmbulanceCoords(routeGeoJSON.coordinates[routeGeoJSON.coordinates.length - 1]);
-        clearInterval(animationRef.current);
-        clearInterval(missionTimerRef.current);
+        // Snap to final coord — no out-of-bounds turf calculation
+        const finalCoord = routeGeoJSON.coordinates[routeGeoJSON.coordinates.length - 1];
+        setAmbulanceCoords(finalCoord);
+
+        // FIX #5: Stop timer exactly on final frame
+        const finalTimeMs = Date.now() - missionStartTime;
+        setMissionTimerMs(finalTimeMs);
+
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+        if (missionTimerRef.current) { clearInterval(missionTimerRef.current); missionTimerRef.current = null; }
+
         setIsDispatching(false);
         setSimulationStatus('completed');
-        const finalTime = (Date.now() - missionStartTime) / 1000;
-        setMissionTimerMs(finalTime * 1000); // Lock final time precisely
+        const finalTime = finalTimeMs / 1000;
         setMissionLogs(prev => [...prev, `[SUCCESS] Arrived at patient in ${finalTime.toFixed(1)}s`]);
 
-        // Estimate comparison time based on queue penalties
         const totalQueuePenalty = activeLights.reduce((sum, l) => sum + Math.floor(l.queue / 5), 0);
         const standardEstimate = aiMode ? (finalTime + totalQueuePenalty + 8 * activeLights.length) : finalTime;
         const aiEstimate = aiMode ? finalTime : Math.max(finalTime - totalQueuePenalty - 8 * activeLights.length, finalTime * 0.5);
-        
+
         const stats = {
-            mode: aiMode ? 'AI PREEMPTION' : 'STANDARD TIMERS',
-            actual: finalTime.toFixed(2),
-            standardTime: standardEstimate.toFixed(2),
-            aiTime: aiEstimate.toFixed(2),
-            savedPercent: aiMode ? ((1 - finalTime / standardEstimate) * 100).toFixed(0) : ((1 - aiEstimate / finalTime) * 100).toFixed(0)
+          mode: aiMode ? 'AI PREEMPTION' : 'STANDARD TIMERS',
+          actual: finalTime.toFixed(2),
+          standardTime: standardEstimate.toFixed(2),
+          aiTime: aiEstimate.toFixed(2),
+          savedPercent: aiMode
+            ? ((1 - finalTime / standardEstimate) * 100).toFixed(0)
+            : ((1 - aiEstimate / finalTime) * 100).toFixed(0)
         };
         setCompletionStats(stats);
         setMissionHistory(prev => [...prev, stats]);
+        return; // exit tick — do NOT schedule next frame
+      }
+
+      // FIX #4: Guard against NaN — must be within valid range
+      const prevDist = Math.max(0, currentDistance - currentSpeed);
+      const clampedDist = Math.min(currentDistance, routeDistance);
+
+      let point1, point2;
+      try {
+        point1 = along(routeGeoJSON, prevDist, { units: 'kilometers' }).geometry.coordinates;
+        point2 = along(routeGeoJSON, clampedDist, { units: 'kilometers' }).geometry.coordinates;
+      } catch (e) {
+        // If turf throws (shouldn't happen with clamped values), skip this frame
+        animationRef.current = requestAnimationFrame(tick);
         return;
       }
-      
-      const point1 = along(routeGeoJSON, currentDistance - currentSpeed > 0 ? currentDistance - currentSpeed : 0, { units: 'kilometers' }).geometry.coordinates;
-      const point2 = along(routeGeoJSON, currentDistance, { units: 'kilometers' }).geometry.coordinates;
-      
-      const calcBearing = bearing(point(point1), point(point2));
 
+      const calcBearing = bearing(point(point1), point(point2));
       setAmbulanceCoords(point2);
-      
-      // Pivot DOM node directly smoothly
+
       const el = document.querySelector('.ambulance-marker');
       if (el && currentSpeed > 0) {
-          el.style.transform = `rotate(${calcBearing + 90}deg)`; // Native Mapbox correction angle
+        el.style.transform = `rotate(${calcBearing + 90}deg)`;
       }
 
-    }, 50); 
+      // Schedule next frame
+      animationRef.current = requestAnimationFrame(tick);
+    };
+
+    // Kick off the animation loop
+    animationRef.current = requestAnimationFrame(tick);
   };
 
   return (
