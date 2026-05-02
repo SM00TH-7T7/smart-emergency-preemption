@@ -3,20 +3,16 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import distance from '@turf/distance';
 import { point } from '@turf/helpers';
-import { Activity, AlertTriangle, LogOut, RadioTower, ShieldCheck, Siren, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, LogOut, MapPin, RadioTower, ShieldCheck, Siren, Zap } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import { supabase } from './supabaseClient';
 import useAlertSound from './hooks/useAlertSound';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 const CITY_CENTER = [78.4772, 17.4065];
-const GEOFENCE_RADIUS_KM = 0.5; // 500 meters
-const ROUTE_LOOK_BEHIND = 12;
-const ROUTE_LOOK_AHEAD = 30;
+const GEOFENCE_RADIUS_KM = 0.5;
 
 mapboxgl.accessToken = MAPBOX_TOKEN || '';
-
-function normalizeStatus(s) { return String(s || 'red').toLowerCase() === 'green' ? 'green' : 'red'; }
 
 function createAmbulanceMarker() {
   const m = document.createElement('div');
@@ -24,69 +20,30 @@ function createAmbulanceMarker() {
   return m;
 }
 
-function createSignalMarker(signal) {
-  const st = normalizeStatus(signal.status);
+function createSignalMarkerEl(signal) {
   const mode = signal.preemption_mode || 'normal';
-  const color = mode === 'failed' ? '#f59e0b' : st === 'green' ? '#22c55e' : '#ef4444';
-  const m = document.createElement('button');
-  m.type = 'button'; m.setAttribute('aria-label', `${signal.name} traffic signal`);
-  Object.assign(m.style, { width: '30px', height: '30px', borderRadius: '9999px', border: '4px solid white', background: color, cursor: 'pointer', padding: '0',
-    boxShadow: `0 0 0 7px ${mode === 'failed' ? 'rgba(245,158,11,0.28)' : st === 'green' ? 'rgba(34,197,94,0.22)' : 'rgba(239,68,68,0.22)'}, 0 12px 28px rgba(15,23,42,0.35)` });
-  return m;
+  const st = String(signal.status || 'red').toLowerCase();
+  const isFailed = mode === 'failed';
+  const isGreen = st === 'green';
+  const color = isFailed ? '#f59e0b' : isGreen ? '#22c55e' : '#ef4444';
+  const glow = isFailed ? 'rgba(245,158,11,0.35)' : isGreen ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)';
+
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:3px;';
+
+  const badge = document.createElement('div');
+  badge.style.cssText = `background:${color};color:white;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;box-shadow:0 0 8px ${glow};white-space:nowrap;`;
+  badge.textContent = `${signal.queue_length ?? 0} cars`;
+
+  const dot = document.createElement('div');
+  dot.style.cssText = `width:26px;height:26px;border-radius:50%;border:3px solid white;background:${color};box-shadow:0 0 14px ${glow};display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:900;cursor:pointer;`;
+  dot.textContent = signal.name?.match(/\d+/)?.[0] ? `S${signal.name.match(/\d+/)[0]}` : 'S';
+
+  wrapper.appendChild(badge);
+  wrapper.appendChild(dot);
+  return wrapper;
 }
 
-function isRealSignal(s) { return Boolean(s?.osm_ref); }
-
-function findClosestCoordIdx(coords, loc) {
-  if (!coords?.length || !loc) return -1;
-  return coords.reduce((b, c, i) => {
-    const km = distance(point(c), point([loc.lng, loc.lat]), { units: 'kilometers' });
-    return km < b.km ? { index: i, km } : b;
-  }, { index: -1, km: Infinity }).index;
-}
-
-function formatPreemptionMode(mode) {
-  if (mode === 'ai_active') return 'AI ACTIVE';
-  if (mode === 'manual_override') return 'MANUAL OVERRIDE';
-  if (mode === 'failed') return 'AI FAILED';
-  return 'NORMAL';
-}
-
-function createSignalPopup(signal, onQueueChange, onOverride) {
-  const st = normalizeStatus(signal.status);
-  const mode = signal.preemption_mode || 'normal';
-  const w = document.createElement('div');
-  w.style.width = '240px'; w.style.color = '#0f172a';
-  w.innerHTML = `
-    <div style="font-family:system-ui,-apple-system,sans-serif;">
-      <p style="margin:0 0 4px;font-size:11px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:#64748b;">Intersection</p>
-      <h3 style="margin:0;font-size:17px;line-height:1.2;color:#0f172a;">${signal.name}</h3>
-      <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-        <span style="font-size:13px;font-weight:700;color:#334155;">Status</span>
-        <span style="border-radius:9999px;padding:4px 9px;font-size:12px;font-weight:900;color:white;background:${st === 'green' ? '#16a34a' : '#dc2626'};">${st.toUpperCase()}</span>
-      </div>
-      <div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-        <span style="font-size:13px;font-weight:700;color:#334155;">Preemption</span>
-        <span style="border-radius:9999px;padding:4px 9px;font-size:12px;font-weight:900;color:white;background:${mode === 'failed' ? '#d97706' : mode === 'normal' ? '#475569' : '#2563eb'};">${formatPreemptionMode(mode)}</span>
-      </div>
-      <p style="margin:8px 0 0;font-size:12px;color:#64748b;">OSM ${signal.osm_ref}</p>
-      <label for="sq-${signal.id}" style="display:block;margin-top:14px;font-size:13px;font-weight:800;color:#334155;">Traffic Queue</label>
-      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
-        <input id="sq-${signal.id}" type="range" min="0" max="50" value="${signal.queue_length ?? 0}" style="width:100%;" />
-        <strong id="sqv-${signal.id}" style="min-width:28px;text-align:right;color:#0f172a;">${signal.queue_length ?? 0}</strong>
-      </div>
-      <button id="so-${signal.id}" type="button" style="margin-top:14px;width:100%;min-height:42px;border:0;border-radius:14px;background:#dc2626;color:white;font-size:13px;font-weight:900;cursor:pointer;">OVERRIDE TO GREEN</button>
-    </div>`;
-  const slider = w.querySelector(`#sq-${CSS.escape(signal.id)}`);
-  const valLabel = w.querySelector(`#sqv-${CSS.escape(signal.id)}`);
-  const btn = w.querySelector(`#so-${CSS.escape(signal.id)}`);
-  slider.addEventListener('input', (e) => { valLabel.textContent = e.target.value; });
-  slider.addEventListener('change', (e) => { onQueueChange(signal.id, Number(e.target.value)); });
-  btn.addEventListener('click', () => { onOverride(signal); });
-  return w;
-}
-
-// Generate a GeoJSON circle polygon for a geofence
 function createGeofenceCircle(center, radiusKm, steps = 64) {
   const coords = [];
   for (let i = 0; i <= steps; i++) {
@@ -106,216 +63,154 @@ export default function PoliceDashboard() {
   const mapRef = useRef(null);
   const ambulanceMarkersRef = useRef(new Map());
   const signalMarkersRef = useRef(new Map());
-  const signalPopupsRef = useRef(new Map());
-  const driverLocRef = useRef(new Map());
-  const missionsRef = useRef(new Map());
-  const geofenceSourcesRef = useRef(new Set());
-  const prevFailCountRef = useRef(0);
+  const prevEventCountRef = useRef(0);
+  const hasFittedRef = useRef(false);
 
-  const [ambulanceCount, setAmbulanceCount] = useState(0);
-  const [signalCount, setSignalCount] = useState(0);
-  const [routeCount, setRouteCount] = useState(0);
+  const [missionSignals, setMissionSignals] = useState([]);
   const [preemptionEvents, setPreemptionEvents] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [ambulanceCount, setAmbulanceCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
 
   // Init map
   useEffect(() => {
     if (!MAPBOX_TOKEN) { setErrorMessage('Missing VITE_MAPBOX_TOKEN.'); return undefined; }
     if (!mapContainerRef.current || mapRef.current) return undefined;
-    const map = new mapboxgl.Map({ container: mapContainerRef.current, style: 'mapbox://styles/mapbox/dark-v11', center: CITY_CENTER, zoom: 11.5 });
+    const map = new mapboxgl.Map({ container: mapContainerRef.current, style: 'mapbox://styles/mapbox/dark-v11', center: CITY_CENTER, zoom: 12 });
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
     mapRef.current = map;
     return () => {
       ambulanceMarkersRef.current.forEach((m) => m.remove());
       signalMarkersRef.current.forEach((m) => m.remove());
-      signalPopupsRef.current.forEach((p) => p.remove());
-      ambulanceMarkersRef.current.clear(); signalMarkersRef.current.clear(); signalPopupsRef.current.clear();
-      driverLocRef.current.clear(); missionsRef.current.clear();
+      ambulanceMarkersRef.current.clear(); signalMarkersRef.current.clear();
       map.remove(); mapRef.current = null;
     };
   }, []);
 
-  // Draw geofence circle on map for a signal
+  // Draw geofence circle
   const drawGeofence = (signal) => {
     if (!mapRef.current || !signal?.id) return;
-    const sourceId = `geofence-${signal.id}`;
-    const layerFill = `${sourceId}-fill`;
-    const layerLine = `${sourceId}-line`;
-
+    const sourceId = `gf-${signal.id}`;
     const circle = createGeofenceCircle([signal.lng, signal.lat], GEOFENCE_RADIUS_KM);
-
-    const addLayers = () => {
+    const add = () => {
       if (!mapRef.current) return;
-      if (mapRef.current.getSource(sourceId)) {
-        mapRef.current.getSource(sourceId).setData(circle);
-        return;
-      }
+      if (mapRef.current.getSource(sourceId)) { mapRef.current.getSource(sourceId).setData(circle); return; }
       mapRef.current.addSource(sourceId, { type: 'geojson', data: circle });
-      mapRef.current.addLayer({ id: layerFill, type: 'fill', source: sourceId, paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.06 } });
-      mapRef.current.addLayer({ id: layerLine, type: 'line', source: sourceId, paint: { 'line-color': '#f59e0b', 'line-opacity': 0.25, 'line-width': 1.5, 'line-dasharray': [4, 4] } });
-      geofenceSourcesRef.current.add(sourceId);
+      mapRef.current.addLayer({ id: `${sourceId}-fill`, type: 'fill', source: sourceId, paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.07 } });
+      mapRef.current.addLayer({ id: `${sourceId}-line`, type: 'line', source: sourceId, paint: { 'line-color': '#f59e0b', 'line-opacity': 0.3, 'line-width': 2, 'line-dasharray': [4, 4] } });
     };
-
-    if (mapRef.current.loaded()) addLayers();
-    else mapRef.current.once('load', addLayers);
+    mapRef.current.loaded() ? add() : mapRef.current.once('load', add);
   };
 
-  const upsertNearbyRoute = (mission) => {
-    if (!mapRef.current || !mission?.id || !mission?.driver_id || !Array.isArray(mission.route_coordinates)) return;
-    if (!mapRef.current.loaded()) { mapRef.current.once('load', () => upsertNearbyRoute(mission)); return; }
-    const dLoc = driverLocRef.current.get(mission.driver_id);
-    if (!dLoc) return;
-    const idx = findClosestCoordIdx(mission.route_coordinates, dLoc);
-    if (idx < 0) return;
-    const seg = mission.route_coordinates.slice(Math.max(0, idx - ROUTE_LOOK_BEHIND), Math.min(mission.route_coordinates.length, idx + ROUTE_LOOK_AHEAD));
-    if (seg.length < 2) return;
-    const sid = `police-route-${mission.id}`, lid = `${sid}-line`;
-    const geo = { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: seg } };
-    if (mapRef.current.getSource(sid)) { mapRef.current.getSource(sid).setData(geo); }
-    else {
-      mapRef.current.addSource(sid, { type: 'geojson', data: geo });
-      mapRef.current.addLayer({ id: lid, type: 'line', source: sid, layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#f97316', 'line-opacity': 0.92, 'line-width': 7 } });
-    }
-  };
-
-  const removeNearbyRoute = (missionId) => {
-    if (!mapRef.current || !missionId || !mapRef.current.loaded()) return;
-    const sid = `police-route-${missionId}`, lid = `${sid}-line`;
-    if (mapRef.current.getLayer(lid)) mapRef.current.removeLayer(lid);
-    if (mapRef.current.getSource(sid)) mapRef.current.removeSource(sid);
-  };
-
-  const refreshRoutes = () => {
-    missionsRef.current.forEach((m) => upsertNearbyRoute(m));
-    setRouteCount(missionsRef.current.size);
-  };
-
-  const upsertAmbulanceMarker = (loc) => {
-    if (!mapRef.current || !loc?.driver_id || loc.lat == null) return;
-    const ll = [loc.lng, loc.lat];
-    driverLocRef.current.set(loc.driver_id, { lat: loc.lat, lng: loc.lng });
-    const existing = ambulanceMarkersRef.current.get(loc.driver_id);
-    if (existing) { existing.setLngLat(ll); refreshRoutes(); return; }
-    const m = new mapboxgl.Marker({ element: createAmbulanceMarker(), anchor: 'center' }).setLngLat(ll).addTo(mapRef.current);
-    ambulanceMarkersRef.current.set(loc.driver_id, m);
-    setAmbulanceCount(ambulanceMarkersRef.current.size);
-    refreshRoutes();
-  };
-
-  const removeAmbulanceMarker = (driverId) => {
-    const m = ambulanceMarkersRef.current.get(driverId);
-    if (m) { m.remove(); ambulanceMarkersRef.current.delete(driverId); driverLocRef.current.delete(driverId); setAmbulanceCount(ambulanceMarkersRef.current.size); }
-  };
-
-  const updateQueue = async (signalId, q) => {
-    const { error } = await supabase.from('traffic_signals').update({ queue_length: Math.max(0, Math.min(50, q)), updated_at: new Date().toISOString() }).eq('id', signalId);
-    if (error) setErrorMessage(error.message);
-  };
-
-  const overrideSignal = async ({ signalId, missionId }) => {
-    if (!signalId) return;
-    const ts = new Date().toISOString();
-    const { error } = await supabase.from('traffic_signals').update({ status: 'green', preemption_mode: 'manual_override', last_preempted_at: ts, updated_at: ts }).eq('id', signalId);
-    if (error) { setErrorMessage(error.message); return; }
-    playAlert('success');
-    if (missionId) {
-      await supabase.from('preemption_events').insert({ mission_id: missionId, traffic_signal_id: signalId, trigger_distance_meters: 0, requested_by: 'police', result: 'manual_override' });
-    }
-  };
-
-  const handleOverride = async (signal) => {
-    await overrideSignal({ signalId: signal?.id, missionId: signal?.active_mission_id });
-  };
-
+  // Render signal marker on map
   const upsertSignalMarker = (signal) => {
-    if (!mapRef.current || !signal?.id || signal.lat == null) return;
-    if (!isRealSignal(signal)) { removeSignalMarker(signal.id); return; }
-    const existing = signalMarkersRef.current.get(signal.id);
+    if (!mapRef.current || !signal?.id) return;
+    const key = signal.id;
+    const existing = signalMarkersRef.current.get(key);
     if (existing) existing.remove();
-    const popup = new mapboxgl.Popup({ closeButton: true, closeOnClick: true, offset: 18 }).setDOMContent(createSignalPopup(signal, updateQueue, handleOverride));
-    const m = new mapboxgl.Marker({ element: createSignalMarker(signal), anchor: 'center' }).setLngLat([signal.lng, signal.lat]).setPopup(popup).addTo(mapRef.current);
-    signalMarkersRef.current.set(signal.id, m);
-    signalPopupsRef.current.set(signal.id, popup);
-    setSignalCount(signalMarkersRef.current.size);
-    // Draw geofence circle
+    const el = createSignalMarkerEl(signal);
+    const m = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([signal.lng, signal.lat]).addTo(mapRef.current);
+    signalMarkersRef.current.set(key, m);
     drawGeofence(signal);
   };
 
-  const removeSignalMarker = (id) => {
-    const m = signalMarkersRef.current.get(id);
-    const p = signalPopupsRef.current.get(id);
-    if (m) m.remove(); if (p) p.remove();
-    signalMarkersRef.current.delete(id); signalPopupsRef.current.delete(id);
-    setSignalCount(signalMarkersRef.current.size);
+  // Ambulance markers
+  const upsertAmbulanceMarker = (loc) => {
+    if (!mapRef.current || !loc?.driver_id || loc.lat == null) return;
+    const ll = [loc.lng, loc.lat];
+    const existing = ambulanceMarkersRef.current.get(loc.driver_id);
+    if (existing) { existing.setLngLat(ll); return; }
+    const m = new mapboxgl.Marker({ element: createAmbulanceMarker(), anchor: 'center' }).setLngLat(ll).addTo(mapRef.current);
+    ambulanceMarkersRef.current.set(loc.driver_id, m);
+    setAmbulanceCount(ambulanceMarkersRef.current.size);
   };
 
-  // Fetch ambulances
+  // Override signal to green
+  const overrideSignal = async (signal) => {
+    if (!signal?.id) return;
+    const ts = new Date().toISOString();
+    const { error } = await supabase.from('traffic_signals').update({ status: 'green', preemption_mode: 'manual_override', last_preempted_at: ts, updated_at: ts }).eq('id', signal.id);
+    if (error) { setErrorMessage(error.message); return; }
+    playAlert('success');
+    // Also insert a preemption event
+    if (signal.active_mission_id) {
+      await supabase.from('preemption_events').insert({ mission_id: signal.active_mission_id, traffic_signal_id: signal.id, trigger_distance_meters: 0, requested_by: 'police', result: 'manual_override' });
+    }
+    addNotification('success', `Override sent: ${signal.name} → GREEN`);
+  };
+
+  // Notification system
+  const addNotification = (type, message) => {
+    const id = Date.now();
+    setNotifications(prev => [{ id, type, message }, ...prev].slice(0, 5));
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 6000);
+  };
+
+  // ── ONLY fetch signals with active_mission_id (on an active ambulance route) ──
+  useEffect(() => {
+    let mounted = true;
+    async function fetchMissionSignals() {
+      const { data } = await supabase.from('traffic_signals')
+        .select('id, osm_ref, name, lat, lng, status, queue_length, preemption_mode, active_mission_id, updated_at')
+        .not('active_mission_id', 'is', null)
+        .order('updated_at', { ascending: false });
+      if (!mounted) return;
+      const signals = data || [];
+      setMissionSignals(signals);
+      signals.forEach(s => upsertSignalMarker(s));
+
+      // Auto-fit map to signals + ambulances on first load
+      if (signals.length > 0 && mapRef.current && !hasFittedRef.current) {
+        hasFittedRef.current = true;
+        const bounds = new mapboxgl.LngLatBounds();
+        signals.forEach(s => bounds.extend([s.lng, s.lat]));
+        ambulanceMarkersRef.current.forEach(m => bounds.extend(m.getLngLat()));
+        mapRef.current.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+      }
+    }
+    fetchMissionSignals();
+
+    // Live updates — only for signals with active missions
+    const ch = supabase.channel('police-mission-signals')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'traffic_signals' }, (p) => {
+        const signal = p.new;
+        if (!signal?.active_mission_id) return; // ignore signals not on a mission
+        fetchMissionSignals();
+        // Notification on state change
+        if (signal.preemption_mode === 'failed') {
+          addNotification('danger', `⚠ AI FAILED at ${signal.name} — Override needed!`);
+          playAlert('alert');
+        } else if (signal.preemption_mode === 'ai_active') {
+          addNotification('info', `AI preemption active: ${signal.name} → GREEN`);
+        } else if (signal.preemption_mode === 'manual_override') {
+          addNotification('success', `Police override: ${signal.name} → GREEN`);
+        }
+      }).subscribe();
+    return () => { mounted = false; supabase.removeChannel(ch); };
+  }, []);
+
+  // Track ambulance positions
   useEffect(() => {
     let mounted = true;
     async function f() {
-      const { data } = await supabase.from('driver_locations').select('driver_id, lat, lng, updated_at');
+      const { data } = await supabase.from('driver_locations').select('driver_id, lat, lng');
       if (mounted) data?.forEach(upsertAmbulanceMarker);
     }
     f();
     const ch = supabase.channel('police-driver-locs')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_locations' }, (p) => {
-        if (p.eventType === 'DELETE') { removeAmbulanceMarker(p.old?.driver_id); return; }
-        upsertAmbulanceMarker(p.new);
+        if (p.new) upsertAmbulanceMarker(p.new);
       }).subscribe();
     return () => { mounted = false; supabase.removeChannel(ch); };
   }, []);
 
-  // Fetch active missions
-  useEffect(() => {
-    let mounted = true;
-    async function f() {
-      const { data } = await supabase.from('active_missions').select('id, driver_id, status, route_coordinates, route_pickup_index, updated_at').in('status', ['accepted', 'en_route_hospital']);
-      if (!mounted) return;
-      missionsRef.current.clear();
-      data?.forEach((m) => { if (m.driver_id && Array.isArray(m.route_coordinates)) missionsRef.current.set(m.id, m); });
-      refreshRoutes();
-    }
-    f();
-    const ch = supabase.channel('police-missions')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'active_missions' }, async (p) => {
-        const mission = p.new;
-        if (!mission || !['accepted', 'en_route_hospital'].includes(mission.status)) {
-          if (p.old?.id) { missionsRef.current.delete(p.old.id); removeNearbyRoute(p.old.id); }
-          refreshRoutes(); return;
-        }
-        const { data } = await supabase.from('active_missions').select('id, driver_id, status, route_coordinates, route_pickup_index, updated_at').eq('id', mission.id).maybeSingle();
-        if (data?.driver_id && Array.isArray(data.route_coordinates)) missionsRef.current.set(data.id, data);
-        refreshRoutes();
-      }).subscribe();
-    return () => { mounted = false; supabase.removeChannel(ch); };
-  }, []);
-
-  // Fetch signals
-  useEffect(() => {
-    let mounted = true;
-    async function f() {
-      const { data } = await supabase.from('traffic_signals')
-        .select('id, osm_ref, name, lat, lng, status, queue_length, preemption_mode, active_mission_id, last_preempted_at, updated_at')
-        .not('osm_ref', 'is', null).order('name', { ascending: true });
-      if (mounted) data?.forEach(upsertSignalMarker);
-    }
-    f();
-    const ch = supabase.channel('police-signals')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'traffic_signals' }, (p) => {
-        if (p.eventType === 'DELETE') { removeSignalMarker(p.old?.id); return; }
-        if (!isRealSignal(p.new)) { removeSignalMarker(p.new?.id); return; }
-        upsertSignalMarker(p.new);
-      }).subscribe();
-    return () => { mounted = false; supabase.removeChannel(ch); };
-  }, []);
-
-  // Fetch preemption events
+  // Fetch preemption events (only mission-related)
   useEffect(() => {
     let mounted = true;
     async function f() {
       const { data } = await supabase.from('preemption_events')
         .select('id, mission_id, traffic_signal_id, trigger_distance_meters, requested_by, result, created_at, traffic_signals(name)')
-        .order('created_at', { ascending: false }).limit(6);
+        .order('created_at', { ascending: false }).limit(8);
       if (mounted) setPreemptionEvents(data || []);
     }
     f();
@@ -325,16 +220,8 @@ export default function PoliceDashboard() {
     return () => { mounted = false; supabase.removeChannel(ch); };
   }, []);
 
-  // Play siren when new AI failure events come in
-  useEffect(() => {
-    const failCount = preemptionEvents.filter((e) => e.result === 'failed').length;
-    if (failCount > prevFailCountRef.current) playAlert('alert');
-    prevFailCountRef.current = failCount;
-  }, [preemptionEvents, playAlert]);
-
-  const latestPre = preemptionEvents[0];
-  const latestFailed = preemptionEvents.find((e) => e.result === 'failed');
-  const failedCount = preemptionEvents.filter((e) => e.result === 'failed').length;
+  const failedSignals = missionSignals.filter(s => s.preemption_mode === 'failed');
+  const activeSignals = missionSignals.filter(s => s.preemption_mode === 'ai_active' || s.preemption_mode === 'manual_override');
 
   return (
     <main className="relative h-screen w-full overflow-hidden bg-slate-950 text-white">
@@ -344,7 +231,11 @@ export default function PoliceDashboard() {
       <div className="absolute left-4 right-4 top-4 z-20 flex items-start justify-between gap-3">
         <div className="rounded-2xl border border-white/10 bg-slate-950/85 px-4 py-3 shadow-xl backdrop-blur">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-300">Police Command</p>
-          <h1 className="mt-1 text-xl font-black text-white">City Emergency Monitor</h1>
+          <h1 className="mt-1 text-lg font-black text-white">Emergency Traffic Monitor</h1>
+          <p className="mt-1 flex items-center gap-2 text-xs font-semibold text-slate-400">
+            <Activity className="h-3.5 w-3.5 text-cyan-300" />
+            {missionSignals.length} signal{missionSignals.length !== 1 ? 's' : ''} on active routes • {ambulanceCount} ambulance{ambulanceCount !== 1 ? 's' : ''}
+          </p>
         </div>
         <button type="button" onClick={signOut} aria-label="Sign out"
           className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-slate-950/85 text-slate-100 shadow-xl backdrop-blur active:scale-95">
@@ -352,73 +243,124 @@ export default function PoliceDashboard() {
         </button>
       </div>
 
-      {/* Persistent OVERRIDE FAB — appears when any signal has failed AI */}
-      {latestFailed && (
-        <button type="button"
-          onClick={() => overrideSignal({ signalId: latestFailed.traffic_signal_id, missionId: latestFailed.mission_id })}
-          className="absolute right-4 top-20 z-30 flex items-center gap-3 rounded-2xl px-5 py-4 text-sm font-black uppercase tracking-wide text-white shadow-2xl siren-flash override-glow fade-in"
-          style={{ background: '#dc2626' }}>
-          <AlertTriangle className="h-6 w-6" />
-          <div className="text-left">
-            <p className="text-xs font-bold opacity-80">AI Failed — {latestFailed.traffic_signals?.name}</p>
-            <p className="text-base">OVERRIDE TO GREEN</p>
+      {/* Notification toasts — top right */}
+      <div className="absolute right-4 top-20 z-30 flex w-80 flex-col gap-2">
+        {notifications.map((n) => (
+          <div key={n.id}
+            className={`flex items-start gap-3 rounded-2xl border p-3 text-sm font-semibold shadow-2xl backdrop-blur slide-in ${
+              n.type === 'danger' ? 'border-red-400/40 bg-red-950/95 text-red-100'
+              : n.type === 'success' ? 'border-emerald-400/40 bg-emerald-950/95 text-emerald-100'
+              : 'border-blue-400/40 bg-blue-950/95 text-blue-100'}`}>
+            {n.type === 'danger' ? <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
+              : n.type === 'success' ? <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
+              : <Bell className="mt-0.5 h-5 w-5 shrink-0 text-blue-300" />}
+            <p>{n.message}</p>
           </div>
-        </button>
+        ))}
+      </div>
+
+      {/* FAILED signal override buttons — persistent floating */}
+      {failedSignals.length > 0 && (
+        <div className="absolute left-4 top-[110px] z-30 flex flex-col gap-2 w-72">
+          {failedSignals.map((s) => (
+            <button key={s.id} type="button" onClick={() => overrideSignal(s)}
+              className="flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-black text-white shadow-2xl siren-flash override-glow fade-in"
+              style={{ background: '#dc2626' }}>
+              <AlertTriangle className="h-6 w-6 shrink-0" />
+              <div>
+                <p className="text-[10px] font-bold uppercase opacity-80">AI Failed — {s.name}</p>
+                <p className="text-sm">OVERRIDE TO GREEN</p>
+              </div>
+            </button>
+          ))}
+        </div>
       )}
 
       {/* Bottom panel */}
-      <section className="absolute bottom-0 left-0 right-0 z-20 rounded-t-[2rem] border-t border-white/10 bg-slate-950/95 px-5 pb-6 pt-5 shadow-2xl shadow-black/60 backdrop-blur">
+      <section className="absolute bottom-0 left-0 right-0 z-20 max-h-[65vh] overflow-y-auto custom-scrollbar rounded-t-[2rem] border-t border-white/10 bg-slate-950/95 px-5 pb-6 pt-5 shadow-2xl shadow-black/60 backdrop-blur">
         <div className="mx-auto max-w-md">
-          {/* Stats grid */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="rounded-2xl border border-red-400/20 bg-red-500/10 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-red-200">Ambulances</p>
-                <Siren className="h-5 w-5 text-red-300" />
-              </div>
-              <p className="mt-2 text-3xl font-black text-white">{ambulanceCount}</p>
-            </div>
-            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">Signals</p>
-                <Activity className="h-5 w-5 text-cyan-300" />
-              </div>
-              <p className="mt-2 text-3xl font-black text-white">{signalCount}</p>
-            </div>
-            <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-200">Failsafe</p>
-                <AlertTriangle className="h-5 w-5 text-amber-300" />
-              </div>
-              <p className="mt-2 text-3xl font-black text-white">{failedCount}</p>
-            </div>
-          </div>
 
-          <div className="mt-3 flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-3 text-sm font-semibold text-slate-300">
-            <RadioTower className="h-5 w-5 shrink-0 text-cyan-300" />
-            <span>{routeCount} active ambulance corridor{routeCount === 1 ? '' : 's'} • 500m geofence zones active</span>
-          </div>
-
-          {latestPre && (
-            <div className={`mt-3 flex items-start gap-3 rounded-2xl border p-3 text-sm font-semibold slide-in ${
-              latestPre.result === 'failed' ? 'border-amber-400/30 bg-amber-500/10 text-amber-100'
-                : latestPre.result === 'manual_override' ? 'border-blue-400/30 bg-blue-500/10 text-blue-100'
-                : 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'}`}>
-              <Zap className="mt-0.5 h-5 w-5 shrink-0" />
+          {/* Signal status panel */}
+          {missionSignals.length > 0 ? (
+            <div className="mb-4">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400 mb-3">Signals on Active Routes</p>
+              <div className="grid gap-2">
+                {missionSignals.map((s) => {
+                  const isGreen = s.status === 'green';
+                  const isFailed = s.preemption_mode === 'failed';
+                  const isOverride = s.preemption_mode === 'manual_override';
+                  return (
+                    <div key={s.id} className={`flex items-center justify-between rounded-xl border p-3 text-sm font-semibold slide-in ${
+                      isFailed ? 'border-amber-400/30 bg-amber-400/10 text-amber-100'
+                      : isGreen ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'
+                      : 'border-red-400/20 bg-red-400/10 text-red-100'}`}>
+                      <div className="flex items-center gap-3">
+                        <div className={`h-3.5 w-3.5 rounded-full ${isFailed ? 'bg-amber-400 siren-flash' : isGreen ? 'bg-emerald-400 live-dot' : 'bg-red-400'}`} />
+                        <div>
+                          <p className="text-sm font-bold">{s.name}</p>
+                          <p className="text-xs opacity-60">{s.queue_length} vehicles queued</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${
+                          isFailed ? 'bg-amber-500 text-white' : isOverride ? 'bg-blue-500 text-white' : isGreen ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}>
+                          {isFailed ? 'AI FAILED' : isOverride ? 'OVERRIDE' : isGreen ? 'GREEN' : 'RED'}
+                        </span>
+                        {isFailed && (
+                          <button type="button" onClick={() => overrideSignal(s)}
+                            className="rounded-lg bg-red-600 px-2.5 py-1 text-[10px] font-black uppercase text-white hover:bg-red-500 active:scale-95">
+                            FIX
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-4 flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 text-sm font-semibold text-slate-400">
+              <RadioTower className="h-5 w-5 shrink-0 text-cyan-300" />
               <div>
-                <p>{latestPre.result === 'failed' ? 'AI preemption failed' : latestPre.result === 'manual_override' ? 'Police override sent' : 'AI preemption active'}</p>
-                <p className="mt-1 text-xs opacity-80">{latestPre.traffic_signals?.name || 'Signal'} — {latestPre.trigger_distance_meters} m</p>
+                <p className="text-white">No active ambulance corridors</p>
+                <p className="mt-1 text-xs">Signals will appear here when an ambulance is dispatched and approaches traffic intersections.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Preemption event log */}
+          {preemptionEvents.length > 0 && (
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400 mb-3">Preemption Event Log</p>
+              <div className="grid gap-2">
+                {preemptionEvents.slice(0, 5).map((ev, i) => {
+                  const fail = ev.result === 'failed';
+                  const manual = ev.result === 'manual_override';
+                  return (
+                    <div key={ev.id} style={{ animationDelay: `${i * 60}ms` }}
+                      className={`flex items-start gap-3 rounded-xl border p-2.5 text-sm font-semibold slide-in ${
+                        fail ? 'border-amber-400/30 bg-amber-400/10 text-amber-100'
+                        : manual ? 'border-blue-400/30 bg-blue-400/10 text-blue-100'
+                        : 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'}`}>
+                      {fail ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> : <Zap className="mt-0.5 h-4 w-4 shrink-0" />}
+                      <div>
+                        <p className="text-xs">{fail ? 'AI failed — override needed' : manual ? 'Police override sent' : 'AI preemption cleared'}</p>
+                        <p className="mt-0.5 text-[11px] opacity-60">{ev.traffic_signals?.name || 'Signal'} at {ev.trigger_distance_meters}m</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
           {errorMessage && (
-            <div className="mt-3 rounded-2xl border border-red-400/30 bg-red-500/10 p-3 text-sm font-medium text-red-100 slide-in">{errorMessage}</div>
+            <div className="mt-3 rounded-2xl border border-red-400/30 bg-red-500/10 p-3 text-sm font-medium text-red-100">{errorMessage}</div>
           )}
 
           <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-slate-500">
             <ShieldCheck className="h-4 w-4" />
-            Signal-controller simulation via Supabase Realtime. Geofence: 500m radius.
+            500m geofence zones active • Real-time Supabase sync
           </div>
         </div>
       </section>
