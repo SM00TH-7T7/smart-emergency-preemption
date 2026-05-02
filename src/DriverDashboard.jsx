@@ -92,12 +92,14 @@ export default function DriverDashboard() {
   const [isAccepting, setIsAccepting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [autoAssigned, setAutoAssigned] = useState(false);
-  const initialLocationRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+  const driverLocationRef = useRef(null);
 
   const applyDriverLocation = (loc, status = 'Ambulance online') => {
     setDriverLocation(loc); setLocationStatus(status); setErrorMessage('');
-    // Store the first location for map init
-    if (!initialLocationRef.current) initialLocationRef.current = loc;
+    driverLocationRef.current = loc;
+    // Trigger map init exactly once
+    setMapReady(true);
   };
 
   useEffect(() => {
@@ -110,10 +112,11 @@ export default function DriverDashboard() {
     );
   }, []);
 
-  // Init map — runs ONCE when initial location is available, never re-runs
+  // Init map — runs ONCE when mapReady becomes true, never re-runs
   useEffect(() => {
-    if (!initialLocationRef.current || !mapContainerRef.current || mapRef.current) return undefined;
-    const loc = initialLocationRef.current;
+    if (!mapReady || !mapContainerRef.current || mapRef.current) return undefined;
+    const loc = driverLocationRef.current;
+    if (!loc) return undefined;
     const map = new mapboxgl.Map({
       container: mapContainerRef.current, style: 'mapbox://styles/mapbox/dark-v11',
       center: [loc.lng, loc.lat], zoom: 14,
@@ -127,8 +130,7 @@ export default function DriverDashboard() {
       driverMarkerRef.current?.remove(); pickupMarkerRef.current?.remove(); hospitalMarkerRef.current?.remove();
       map.remove(); mapRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [driverLocation]); // triggers on first driverLocation set, guard prevents re-init
+  }, [mapReady]);
 
   // Sync driver marker position (runs on every driverLocation change during simulation)
   useEffect(() => {
