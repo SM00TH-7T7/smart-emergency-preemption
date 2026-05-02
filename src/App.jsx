@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import { LogOut, Shield } from 'lucide-react';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -6,11 +6,13 @@ import DriverDashboard from './DriverDashboard';
 import Login from './Login';
 import PatientDashboard from './PatientDashboard';
 import PoliceDashboard from './PoliceDashboard';
+import DispatcherDashboard from './DispatcherDashboard';
 
 const roleRoutes = {
   patient: '/patient-dash',
   driver: '/driver-dash',
   police: '/police-dash',
+  dispatcher: '/dispatcher-dash',
 };
 
 const roleLabels = {
@@ -109,6 +111,15 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/dispatcher-dash"
+        element={
+          <ProtectedRoute allowedRole="dispatcher">
+            <DispatcherDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="/demo-dispatch" element={<DispatcherDashboard />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

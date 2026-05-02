@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -11,4 +13,184 @@
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   @apply bg-slate-950 text-slate-100;
+}
+
+/* ── SOS Panic Button Pulse ────────────────────────────────── */
+@keyframes pulse-sos {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 18px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+.sos-pulse {
+  animation: pulse-sos 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.sos-pulse:disabled {
+  animation: none;
+}
+
+/* ── Slide-in animation for event cards ────────────────────── */
+@keyframes slide-in-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.slide-in {
+  animation: slide-in-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── Geofence ring pulse for police map ────────────────────── */
+@keyframes geofence-ring {
+  0% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.15;
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+}
+
+.geofence-pulse {
+  animation: geofence-ring 3s ease-in-out infinite;
+}
+
+/* ── Siren flash for override button ──────────────────────── */
+@keyframes siren-flash {
+  0%, 100% {
+    background-color: #dc2626;
+  }
+  50% {
+    background-color: #ef4444;
+    box-shadow: 0 0 24px rgba(239, 68, 68, 0.6);
+  }
+}
+
+.siren-flash {
+  animation: siren-flash 0.8s ease-in-out infinite;
+}
+
+/* ── Breathing glow for active status indicators ──────────── */
+@keyframes breathe-glow {
+  0%, 100% {
+    opacity: 0.6;
+    box-shadow: 0 0 8px currentColor;
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 20px currentColor;
+  }
+}
+
+.breathe-glow {
+  animation: breathe-glow 2s ease-in-out infinite;
+}
+
+/* ── Live dot pulse ───────────────────────────────────────── */
+@keyframes live-dot {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.6);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.live-dot {
+  animation: live-dot 1.5s ease-in-out infinite;
+}
+
+/* ── Fade-in for dashboard panels ─────────────────────────── */
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fade-in 0.4s ease-out both;
+}
+
+/* ── Custom scrollbar ─────────────────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+/* ── Progress bar shimmer ─────────────────────────────────── */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(56, 189, 248, 0.8) 0%,
+    rgba(56, 189, 248, 1) 50%,
+    rgba(56, 189, 248, 0.8) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── ETA card gradient ────────────────────────────────────── */
+.eta-gradient {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.12) 0%, rgba(34, 211, 238, 0.06) 100%);
+}
+
+/* ── Override button glow ─────────────────────────────────── */
+.override-glow {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.3), 0 8px 32px rgba(127, 29, 29, 0.5);
+  transition: box-shadow 0.3s ease, transform 0.15s ease;
+}
+
+.override-glow:hover {
+  box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.4), 0 12px 40px rgba(127, 29, 29, 0.6);
+}
+
+.override-glow:active {
+  transform: scale(0.98);
 }

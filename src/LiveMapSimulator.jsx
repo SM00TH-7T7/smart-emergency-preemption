@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { Target, MapPin, Search, Activity, Loader2, Traffic, Hospital, ChevronRight, Clock, AlertCircle } from 'lucide-react';
+import { Target, MapPin, Search, Activity, Loader2, AlertTriangle, Building2, ChevronRight, Clock } from 'lucide-react';
 import distance from '@turf/distance';
 import length from '@turf/length';
 import along from '@turf/along';
@@ -862,7 +862,7 @@ const LiveMapSimulator = () => {
             {trafficLights.length > 0 && (simulationStatus === 'running' || simulationStatus === 'completed') && (
               <div className="mt-3 pt-3 border-t border-slate-700/50">
                 <p className="text-xs font-bold text-slate-300 mb-3 flex items-center gap-2">
-                  <Traffic className="w-4 h-4 text-purple-400" />
+                  <AlertTriangle className="w-4 h-4 text-purple-400" />
                   Signal Operations
                 </p>
                 <div className="flex flex-col gap-2">
@@ -888,7 +888,7 @@ const LiveMapSimulator = () => {
             {selectedHospital && (simulationStatus === 'running' || simulationStatus === 'completed') && (
               <div className="mt-3 pt-3 border-t border-slate-700/50">
                 <p className="text-xs font-bold text-slate-300 mb-3 flex items-center gap-2">
-                  <Hospital className="w-4 h-4 text-blue-400" />
+                  <Building2 className="w-4 h-4 text-blue-400" />
                   Routing Target
                 </p>
                 <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 flex flex-col gap-2">
