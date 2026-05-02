@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import distance from '@turf/distance';
-import { point } from '@turf/helpers';
+import nearestPointOnLine from '@turf/nearest-point-on-line';
+import length from '@turf/length';
+import { point, lineString } from '@turf/helpers';
 import { Building2, Crosshair, Loader2, LogOut, MapPin, Navigation, Radio, ShieldCheck, Siren, Truck } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import { supabase } from './supabaseClient';
@@ -81,6 +83,7 @@ export default function DriverDashboard() {
   const hospitalMarkerRef = useRef(null);
   const simulationTimerRef = useRef(null);
   const triggeredSignalsRef = useRef(new Set());
+  const signalMarkersRef = useRef(new Map());
 
   const [driverLocation, setDriverLocation] = useState(null);
   const [locationStatus, setLocationStatus] = useState('Locating ambulance...');
@@ -93,6 +96,7 @@ export default function DriverDashboard() {
   const [errorMessage, setErrorMessage] = useState('');
   const [autoAssigned, setAutoAssigned] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  const [routeSignals, setRouteSignals] = useState([]);
   const driverLocationRef = useRef(null);
 
   const applyDriverLocation = (loc, status = 'Ambulance online') => {
@@ -220,24 +224,143 @@ export default function DriverDashboard() {
     mapRef.current.loaded() ? go() : mapRef.current.once('load', go);
   };
 
-  const fetchSignals = async () => {
-    const { data } = await supabase.from('traffic_signals').select('id, name, lat, lng, status, queue_length, preemption_mode').not('osm_ref', 'is', null);
-    return data || [];
+  // Fetch REAL traffic signals along route from Overpass API, upsert into Supabase
+  const fetchSignalsAlongRoute = async (routeCoords, missionId) => {
+    // Build bounding box from route
+    let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+    routeCoords.forEach(([lng, lat]) => {
+      if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
+    });
+    const pad = 0.003;
+    const bbox = `${minLat - pad},${minLng - pad},${maxLat + pad},${maxLng + pad}`;
+    const query = `[out:json];node["highway"="traffic_signals"](${bbox});out;`;
+    const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+
+    let rawSignals = [];
+    try {
+      const resp = await fetch(url);
+      const data = await resp.json();
+      rawSignals = data.elements || [];
+    } catch { /* fallback below */ }
+
+    const routeLine = lineString(routeCoords);
+    const routeLen = length({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: routeCoords } }, { units: 'kilometers' });
+
+    // Snap real signals onto route, filter to within 150m of route
+    const snapped = rawSignals
+      .filter(el => el.lat && el.lon && !isNaN(el.lat) && !isNaN(el.lon))
+      .map(el => {
+        try {
+          const snap = nearestPointOnLine(routeLine, point([el.lon, el.lat]));
+          if (snap.properties.dist > 0.15) return null; // >150m from route
+          const distAlong = snap.properties.location;
+          if (distAlong < routeLen * 0.08 || distAlong > routeLen * 0.95) return null;
+          return { osmId: el.id, coord: snap.geometry.coordinates, distAlong, lat: snap.geometry.coordinates[1], lng: snap.geometry.coordinates[0] };
+        } catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.distAlong - b.distAlong);
+
+    // Deduplicate: keep signals >300m apart
+    const deduped = [];
+    for (const s of snapped) {
+      if (!deduped.length || s.distAlong - deduped[deduped.length - 1].distAlong > 0.3) deduped.push(s);
+      if (deduped.length >= 5) break; // max 5 signals
+    }
+
+    // If no real signals, create 3 synthetic ones along the route
+    const { default: along } = await import('@turf/along');
+    let finalSignals = deduped.length > 0 ? deduped : [0.25, 0.5, 0.75].map(pct => {
+      const pt = along({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: routeCoords } }, routeLen * pct, { units: 'kilometers' });
+      return { osmId: Math.floor(Math.random() * 999999), coord: pt.geometry.coordinates, distAlong: routeLen * pct, lat: pt.geometry.coordinates[1], lng: pt.geometry.coordinates[0] };
+    });
+
+    // Build signal objects with random queues
+    const signals = finalSignals.map((s, i) => {
+      const queue = Math.floor(Math.random() * 40) + 5;
+      return {
+        id: null, // will be set after upsert
+        osm_ref: String(s.osmId),
+        name: `Signal ${i + 1} (OSM ${s.osmId})`,
+        lat: s.lat, lng: s.lng,
+        status: 'red', queue_length: queue,
+        preemption_mode: 'normal',
+        coord: s.coord, distAlong: s.distAlong,
+      };
+    });
+
+    // Upsert into Supabase so police dashboard sees them
+    for (const sig of signals) {
+      const { data } = await supabase.from('traffic_signals').upsert({
+        osm_ref: sig.osm_ref, name: sig.name, lat: sig.lat, lng: sig.lng,
+        status: 'red', queue_length: sig.queue_length, preemption_mode: 'normal',
+        active_mission_id: missionId, updated_at: new Date().toISOString(),
+      }, { onConflict: 'osm_ref' }).select('id').single();
+      if (data?.id) sig.id = data.id;
+    }
+
+    return signals;
+  };
+
+  // Create/update a signal marker on the map
+  const upsertSignalMarker = (signal) => {
+    if (!mapRef.current) return;
+    const key = signal.osm_ref;
+    const existing = signalMarkersRef.current.get(key);
+    if (existing) existing.remove();
+
+    const isGreen = signal.status === 'green';
+    const isFailed = signal.preemption_mode === 'failed';
+    const color = isFailed ? '#f59e0b' : isGreen ? '#22c55e' : '#ef4444';
+    const glow = isFailed ? 'rgba(245,158,11,0.35)' : isGreen ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)';
+
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.gap = '3px';
+
+    // Queue badge
+    const badge = document.createElement('div');
+    badge.style.cssText = `background:${color};color:white;padding:2px 7px;border-radius:6px;font-size:10px;font-weight:800;box-shadow:0 0 8px ${glow};white-space:nowrap;`;
+    badge.textContent = `${signal.queue_length} cars`;
+
+    // Signal dot
+    const dot = document.createElement('div');
+    dot.style.cssText = `width:22px;height:22px;border-radius:50%;border:3px solid white;background:${color};box-shadow:0 0 12px ${glow};display:flex;align-items:center;justify-content:center;color:white;font-size:9px;font-weight:900;`;
+    dot.textContent = `S${signal.name.match(/\d+/)?.[0] || ''}`;
+
+    wrapper.appendChild(badge);
+    wrapper.appendChild(dot);
+
+    const m = new mapboxgl.Marker({ element: wrapper, anchor: 'center' }).setLngLat(signal.coord).addTo(mapRef.current);
+    signalMarkersRef.current.set(key, m);
   };
 
   const triggerPreemption = async (mission, signal, distMeters) => {
-    if (!mission?.id || !signal?.id || triggeredSignalsRef.current.has(signal.id)) return;
-    triggeredSignalsRef.current.add(signal.id);
+    if (!mission?.id || !signal?.id || triggeredSignalsRef.current.has(signal.osm_ref)) return;
+    triggeredSignalsRef.current.add(signal.osm_ref);
     const n = triggeredSignalsRef.current.size;
     const aiFails = Number(signal.queue_length || 0) >= 35 || n % 4 === 0;
     const result = aiFails ? 'failed' : 'success';
+    const ts = new Date().toISOString();
     const update = aiFails
-      ? { preemption_mode: 'failed', active_mission_id: mission.id, last_preempted_at: new Date().toISOString(), updated_at: new Date().toISOString() }
-      : { status: 'green', preemption_mode: 'ai_active', active_mission_id: mission.id, last_preempted_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-    await supabase.from('traffic_signals').update(update).eq('id', signal.id);
-    await supabase.from('preemption_events').insert({ mission_id: mission.id, traffic_signal_id: signal.id, trigger_distance_meters: Math.round(distMeters), requested_by: 'ai', result });
+      ? { preemption_mode: 'failed', active_mission_id: mission.id, last_preempted_at: ts, updated_at: ts }
+      : { status: 'green', preemption_mode: 'ai_active', active_mission_id: mission.id, last_preempted_at: ts, updated_at: ts };
+    if (signal.id) {
+      await supabase.from('traffic_signals').update(update).eq('id', signal.id);
+      await supabase.from('preemption_events').insert({ mission_id: mission.id, traffic_signal_id: signal.id, trigger_distance_meters: Math.round(distMeters), requested_by: 'ai', result });
+    }
+    // Update local state + map marker
+    signal.status = aiFails ? 'red' : 'green';
+    signal.preemption_mode = aiFails ? 'failed' : 'ai_active';
+    upsertSignalMarker(signal);
+    setRouteSignals(prev => prev.map(s => s.osm_ref === signal.osm_ref ? { ...s, status: signal.status, preemption_mode: signal.preemption_mode } : s));
+
     if (aiFails) playAlert('alert');
-    setPreemptionLog((cur) => [{ id: `${signal.id}-${Date.now()}`, name: signal.name, result, distanceMeters: Math.round(distMeters) }, ...cur].slice(0, 4));
+    else playAlert('success');
+    setPreemptionLog((cur) => [{ id: `${signal.osm_ref}-${Date.now()}`, name: signal.name, result, distanceMeters: Math.round(distMeters) }, ...cur].slice(0, 6));
   };
 
   const startGpsSimulation = (coords, mission, pickupIdx, signals) => {
@@ -266,10 +389,11 @@ export default function DriverDashboard() {
         await supabase.from('active_missions').update({ status: 'en_route_hospital', patient_picked_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', mission.id);
       }
       await supabase.from('driver_locations').upsert({ driver_id: user.id, lat: loc.lat, lng: loc.lng, updated_at: new Date().toISOString() }, { onConflict: 'driver_id' });
-      await Promise.all(signals.map(async (s) => {
+      // Check proximity to each signal
+      for (const s of signals) {
         const m = distance(point([loc.lng, loc.lat]), point([s.lng, s.lat]), { units: 'kilometers' }) * 1000;
         if (m <= SIGNAL_GEOFENCE_METERS) await triggerPreemption(mission, s, m);
-      }));
+      }
       idx += 1;
     }, SIMULATION_TICK_MS);
   };
@@ -284,7 +408,13 @@ export default function DriverDashboard() {
     const raw = data.routes[0].geometry.coordinates;
     const rawPick = findClosestCoordinateIndex(raw, { lat: mission.pickup_lat, lng: mission.pickup_lng });
     const { coordinates, pickupIndex } = buildSimulationRoute(raw, rawPick);
-    const signals = await fetchSignals();
+
+    // Fetch REAL traffic signals along this route
+    const signals = await fetchSignalsAlongRoute(coordinates, mission.id);
+    setRouteSignals(signals);
+    // Place signal markers on the map
+    signals.forEach(s => upsertSignalMarker(s));
+
     await supabase.from('active_missions').update({ route_coordinates: coordinates, route_pickup_index: pickupIndex, updated_at: new Date().toISOString() }).eq('id', mission.id);
     drawRoute(coordinates, pickupIndex);
     if (mapRef.current) {
@@ -410,6 +540,37 @@ export default function DriverDashboard() {
               <div className="mt-2 flex items-center gap-1.5">
                 <div className="h-2 w-2 rounded-full bg-blue-400 live-dot" />
                 <span className="text-xs font-semibold text-blue-300">{routePhase === 'to_patient' ? 'En route to patient' : routePhase === 'to_hospital' ? 'En route to hospital' : routePhase === 'completed' ? 'Mission complete' : 'Standby'}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Signal status panel */}
+          {routeSignals.length > 0 && activeMission && (
+            <div className="mt-4 rounded-2xl border border-slate-700/50 bg-slate-900/80 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-400 mb-3">Traffic Signals on Route</p>
+              <div className="grid gap-2">
+                {routeSignals.map((s) => {
+                  const isGreen = s.status === 'green';
+                  const isFailed = s.preemption_mode === 'failed';
+                  return (
+                    <div key={s.osm_ref} className={`flex items-center justify-between rounded-xl border p-2.5 text-sm font-semibold slide-in ${
+                      isFailed ? 'border-amber-400/30 bg-amber-400/10 text-amber-100'
+                      : isGreen ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'
+                      : 'border-red-400/20 bg-red-400/10 text-red-100'}`}>
+                      <div className="flex items-center gap-2">
+                        <div className={`h-3 w-3 rounded-full ${isFailed ? 'bg-amber-400' : isGreen ? 'bg-emerald-400 live-dot' : 'bg-red-400'}`} />
+                        <span className="text-xs">{s.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs opacity-70">{s.queue_length} cars</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${
+                          isFailed ? 'bg-amber-500 text-white' : isGreen ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}`}>
+                          {isFailed ? 'FAILED' : isGreen ? 'GREEN' : 'RED'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
