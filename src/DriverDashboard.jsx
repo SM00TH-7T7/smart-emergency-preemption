@@ -98,6 +98,7 @@ export default function DriverDashboard() {
   const [mapReady, setMapReady] = useState(false);
   const [routeSignals, setRouteSignals] = useState([]);
   const driverLocationRef = useRef(null);
+  const routeSignalsRef = useRef([]);
 
   const applyDriverLocation = (loc, status = 'Ambulance online') => {
     setDriverLocation(loc); setLocationStatus(status); setErrorMessage('');
@@ -142,6 +143,26 @@ export default function DriverDashboard() {
     driverMarkerRef.current.setLngLat([driverLocation.lng, driverLocation.lat]);
     if (!activeMission) mapRef.current.easeTo({ center: [driverLocation.lng, driverLocation.lat], duration: 500, zoom: 14 });
   }, [activeMission, driverLocation]);
+
+  // Listen for police manual overrides on traffic signals
+  useEffect(() => {
+    if (!activeMission?.id) return;
+    const ch = supabase.channel('driver-signals')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'traffic_signals', filter: `active_mission_id=eq.${activeMission.id}` }, (p) => {
+        const updatedSignal = p.new;
+        if (updatedSignal && updatedSignal.preemption_mode === 'manual_override') {
+          setRouteSignals(prev => {
+            const next = prev.map(s => s.id === updatedSignal.id || s.osm_ref === updatedSignal.osm_ref ? { ...s, status: updatedSignal.status, preemption_mode: updatedSignal.preemption_mode } : s);
+            routeSignalsRef.current = next;
+            const sig = next.find(s => s.id === updatedSignal.id || s.osm_ref === updatedSignal.osm_ref);
+            if (sig) upsertSignalMarker(sig);
+            return next;
+          });
+          playAlert('success');
+        }
+      }).subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [activeMission?.id, playAlert]);
 
   // Listen for missions (both pending + auto-assigned to this driver)
   useEffect(() => {
@@ -356,7 +377,11 @@ export default function DriverDashboard() {
     signal.status = aiFails ? 'red' : 'green';
     signal.preemption_mode = aiFails ? 'failed' : 'ai_active';
     upsertSignalMarker(signal);
-    setRouteSignals(prev => prev.map(s => s.osm_ref === signal.osm_ref ? { ...s, status: signal.status, preemption_mode: signal.preemption_mode } : s));
+    setRouteSignals(prev => {
+      const next = prev.map(s => s.osm_ref === signal.osm_ref ? { ...s, status: signal.status, preemption_mode: signal.preemption_mode } : s);
+      routeSignalsRef.current = next;
+      return next;
+    });
 
     if (aiFails) playAlert('alert');
     else playAlert('success');
@@ -381,6 +406,31 @@ export default function DriverDashboard() {
         return;
       }
       const loc = { lng: next[0], lat: next[1] };
+
+      // --- WAITING LOGIC ---
+      // If there's a red/failed signal within 40 meters, stop the ambulance and wait
+      const currentSignals = routeSignalsRef.current.length > 0 ? routeSignalsRef.current : signals;
+      let isWaiting = false;
+      for (const s of currentSignals) {
+        const m = distance(point([loc.lng, loc.lat]), point([s.lng, s.lat]), { units: 'kilometers' }) * 1000;
+        if (m < 40 && String(s.status).toLowerCase() !== 'green') {
+          isWaiting = true;
+          break;
+        }
+      }
+
+      if (isWaiting) {
+        // Pause simulation until police overrides it to green.
+        // Do not increment idx, do not move driverLocation.
+        setRoutePhase('waiting_for_override');
+        return;
+      }
+      // ---------------------
+
+      if (routePhase === 'waiting_for_override') {
+         setRoutePhase(pickupMarked ? 'to_hospital' : 'to_patient');
+      }
+
       setDriverLocation(loc);
       setRouteProgress(Math.round(((idx + 1) / coords.length) * 100));
 
@@ -412,6 +462,7 @@ export default function DriverDashboard() {
     // Fetch REAL traffic signals along this route
     const signals = await fetchSignalsAlongRoute(coordinates, mission.id);
     setRouteSignals(signals);
+    routeSignalsRef.current = signals;
     // Place signal markers on the map
     signals.forEach(s => upsertSignalMarker(s));
 
@@ -538,8 +589,10 @@ export default function DriverDashboard() {
                 <div className="h-full rounded-full progress-shimmer transition-all" style={{ width: `${routeProgress}%` }} />
               </div>
               <div className="mt-2 flex items-center gap-1.5">
-                <div className="h-2 w-2 rounded-full bg-blue-400 live-dot" />
-                <span className="text-xs font-semibold text-blue-300">{routePhase === 'to_patient' ? 'En route to patient' : routePhase === 'to_hospital' ? 'En route to hospital' : routePhase === 'completed' ? 'Mission complete' : 'Standby'}</span>
+                <div className={`h-2 w-2 rounded-full ${routePhase === 'waiting_for_override' ? 'bg-amber-400 siren-flash' : 'bg-blue-400 live-dot'}`} />
+                <span className={`text-xs font-semibold ${routePhase === 'waiting_for_override' ? 'text-amber-400' : 'text-blue-300'}`}>
+                  {routePhase === 'waiting_for_override' ? 'Waiting for police override...' : routePhase === 'to_patient' ? 'En route to patient' : routePhase === 'to_hospital' ? 'En route to hospital' : routePhase === 'completed' ? 'Mission complete' : 'Standby'}
+                </span>
               </div>
             </div>
           )}
