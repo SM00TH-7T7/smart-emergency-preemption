@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { Target, MapPin, Search, Activity, Loader2 } from 'lucide-react';
+import { Target, MapPin, Search, Activity, Loader2, Traffic, Hospital, ChevronRight, Clock, AlertCircle } from 'lucide-react';
 import distance from '@turf/distance';
 import length from '@turf/length';
 import along from '@turf/along';
@@ -629,7 +629,8 @@ const LiveMapSimulator = () => {
             setMissionLogs(prev => [...prev, `[AI] Junction L${upcomingLight.id}: ${upcomingLight.queue} vehicles detected. Intercepting API...`]);
 
             try {
-              const response = await fetch('http://127.0.0.1:8000/predict', {
+              const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+              const response = await fetch(`${apiUrl}/predict`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ev_distance: Math.round(distToLight * 1000), sv_queue: upcomingLight.queue })
@@ -854,6 +855,58 @@ const LiveMapSimulator = () => {
             ) : (
               <div className="flex items-center gap-3 text-slate-500 py-3">
                  <span className="italic text-sm font-light">Awaiting incident...</span>
+              </div>
+            )}
+
+            {/* SIGNAL OPERATIONS DISPLAY */}
+            {trafficLights.length > 0 && (simulationStatus === 'running' || simulationStatus === 'completed') && (
+              <div className="mt-3 pt-3 border-t border-slate-700/50">
+                <p className="text-xs font-bold text-slate-300 mb-3 flex items-center gap-2">
+                  <Traffic className="w-4 h-4 text-purple-400" />
+                  Signal Operations
+                </p>
+                <div className="flex flex-col gap-2">
+                  {trafficLights.map((signal) => (
+                    <div key={signal.id} className={`p-2 rounded-lg border flex items-center justify-between text-xs ${signal.isGreen ? 'bg-emerald-500/15 border-emerald-500/50 shadow-[0_0_8px_rgba(16,185,129,0.2)]' : 'bg-rose-500/15 border-rose-500/50'}`}>
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full animate-pulse ${signal.isGreen ? 'bg-emerald-400 shadow-[0_0_4px_#10b981]' : 'bg-rose-400 shadow-[0_0_4px_#ef4444]'}`}></div>
+                        <span className="font-bold">{signal.isGreen ? '🟢' : '🔴'} L{signal.id}</span>
+                        <span className={`text-[10px] font-mono ${signal.isGreen ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {signal.queue} cars
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${signal.isGreen ? 'bg-emerald-500/30 text-emerald-300' : 'bg-rose-500/30 text-rose-300'}`}>
+                        {signal.isGreen ? 'GREEN' : 'RED'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* HOSPITAL REROUTING DISPLAY */}
+            {selectedHospital && (simulationStatus === 'running' || simulationStatus === 'completed') && (
+              <div className="mt-3 pt-3 border-t border-slate-700/50">
+                <p className="text-xs font-bold text-slate-300 mb-3 flex items-center gap-2">
+                  <Hospital className="w-4 h-4 text-blue-400" />
+                  Routing Target
+                </p>
+                <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-blue-400 animate-pulse"></div>
+                    <span className="text-sm font-bold text-blue-300">{selectedHospital.name}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 grid grid-cols-2 gap-2 mt-1">
+                    <div>
+                      <span className="text-slate-500">Distance:</span>
+                      <span className="text-blue-300 font-mono ml-1">{drivingDistance?.toFixed(1)}km</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500">ETA:</span>
+                      <span className="text-blue-300 font-mono ml-1">{Math.ceil(drivingDistance ? (drivingDistance / 40) * 60 : 0)}min</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 

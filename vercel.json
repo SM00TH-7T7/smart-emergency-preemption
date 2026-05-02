@@ -1,1 +1,19 @@
-{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "env": {
+    "VITE_MAPBOX_TOKEN": "@mapbox_token",
+    "VITE_SUPABASE_URL": "@supabase_url",
+    "VITE_SUPABASE_ANON_KEY": "@supabase_key",
+    "VITE_API_URL": "@api_url"
+  },
+  "functions": {
+    "api/handler.py": {
+      "maxDuration": 30
+    }
+  }
+}
